@@ -1,0 +1,438 @@
+---
+title: "Final Project"
+author: "Group 10: Huiting Wu, Sharmeen Kapporwala"
+date: "2024-11-12"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(here)
+library(readr)
+library(tidyverse)
+library(gtsummary)
+library(wesanderson)   #for color blind
+library(ggpubfigs)    #for color blind
+library(maps)
+library(mapdata)
+library(tidygeocoder)   #to create map
+library(mapproj)
+library(viridis)   #for color blind
+```
+
+```{r}
+cyber_original <- read_csv("cybersecurity_attacks.csv")   #retrieving Dataset
+```
+
+# Part 1: Data Cleaning
+
+
+## extracting the important variables only
+```{r}
+
+cyber <- cyber_original |> 
+  select(Timestamp, 
+         `Attack Type`, 
+         `Severity Level`, 
+         `Action Taken`, 
+         `Geo-location Data`, 
+         `Device Information`) |> 
+  mutate_if(is.character, as.factor) #changing categorical variables to factor
+
+```
+
+## Renaming the columns for better understanding 
+
+```{r}
+cyber <- cyber |>
+  rename(Attack_Type = `Attack Type`,
+         Severity_level =  `Severity Level`,
+         Action_taken = `Action Taken`,
+         Geo_location = `Geo-location Data`, 
+         Device_Information = `Device Information`
+         )
+
+#colnames(cyber)
+```
+
+## Create a new variable for device type (Apple and Non-Apple)
+
+```{r}
+cyber_device <- cyber |> 
+  mutate(Device = ifelse(
+    #extracting words from string
+    grepl("Windows|Android|Linux", Device_Information),    
+    "Non-Apple Device", 
+    ifelse(grepl("Mac|iPad|iPhone|iPod", Device_Information), 
+           "Apple Device",
+           "Others"))) # assign them into Apple or non-Apple device
+```
+
+# Part 2: Exploratory Data Analysis
+
+## Missing Values: There is no missing values in the selected columns
+
+```{r}
+
+cyber |>                                    
+  summarise(across(everything(), ~ sum(is.na(.)))) |>   
+  #adding all counts of a single column
+    pivot_longer(cols = everything(), 
+                 names_to = "Variable", 
+                 values_to = "Missing count")   #assigning names to columns
+
+```
+
+## Summary Table
+
+```{r}
+cyber_device |> 
+  select(Attack_Type, Action_taken, Severity_level, Device) |> 
+  tbl_summary(by = Device)   #to get proportion grouped by device type
+```
+
+## Plots
+
+package: wesanderson or ggbugfigs
+
+*These are a handful of color palettes that are color blind friendly.*
+
+-   **Relationship Of Attack Types And Severity Level**
+
+```{r}
+#bar plot to show relationship 
+
+cyber |> ggplot(aes(x = Attack_Type, fill = Severity_level)) + 
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = wes_palette("Darjeeling1")) +
+  labs(title = "Relationship Of Attack Types And \n Severity Level",
+       x = "Attack Type", 
+       fill = "Severity Level",
+       y = "Frequency") + 
+  theme_minimal()
+```
+
+-   **Relationship Of Device Types And Attack Types**
+
+```{r}
+
+#bar plot to show relationship w.r.t frequency
+
+cyber_device |> ggplot(aes(x = Device, fill = Attack_Type)) +
+  geom_bar(position = "dodge") + 
+  scale_fill_manual(values = friendly_pal("contrast_three")) + 
+  labs(title = "Relationship Of Device Types And Attack Types",
+       fill = "Attack type",
+       x = "Devices",
+       y = "Frequency") +        
+  theme_minimal()
+```
+
+```{r}
+# Unbalance Data set 
+
+pie(table(cyber_device$Device), 
+    main = "Pie Chart of Device Types", 
+    label = paste(names(table(cyber_device$Device)), ": \n", 
+                  table(cyber_device$Device)))
+```
+
+```{r}
+#bar plot to show relationship w.r.t proportion
+
+
+cyber_device |> ggplot(aes(x = Device, fill = Attack_Type)) +
+  geom_bar(position = "fill") + 
+  scale_fill_manual(values = friendly_pal("contrast_three")) + 
+  labs(title = "Relationship Of Device Types And Attack Types",
+       fill = "Attack Types",
+       x = "Devices",
+       y = "Proportion") +
+  theme_minimal()
+```
+
+```{r}
+  
+#showing relationship through heatmap to get better 
+# visualization of proportions of attacks
+
+prop_cyber <- cyber_device |>
+  group_by(Device, Attack_Type) |>
+  summarise(Count = n()) |>
+  mutate(Proportion = Count / sum (Count)) |>
+  ungroup ()
+
+ggplot(prop_cyber, aes(x = Attack_Type, y = Device , fill = Proportion)) + 
+  geom_tile(color = "white") + 
+  scale_fill_viridis(alpha = 1, begin = 1, end = 0, 
+                     direction = 1, discrete = FALSE,  
+                option = "G", aesthetics = "fill") +
+         #used viridis for color blind friendly            
+  labs (
+    title = "Relationship between Devices and Attack Type \nthrough heatmap",
+    x = "Attack Type",
+    y="Devices", 
+    fill = "Proportion"
+  )+ 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+-   **Relationship Of Device Types, Action Taken, and Attack Type**
+
+```{r fig.width=7}
+
+#barplot w.r.t proportion 
+
+cyber_device |> ggplot(aes(fill = Device, x = Action_taken)) +
+  geom_bar(position = "fill") +
+  facet_wrap(~ Attack_Type) +
+  scale_fill_manual(values = friendly_pal("ito_seven")) + 
+  labs(title = "Relationship Of Device Type, Action Taken, \n And Attack Types",
+       y = "Proportion",
+       x = "Action Taken",
+       fill = "Devices") +
+  theme_classic()
+
+
+```
+
+-   **Map Of States Of India With Number Of Attacks**
+
+```{r}
+# use sub() to extract the state name from the geom location, 
+# count the total attacks for the state
+locations <- cyber |> 
+  mutate(Location = sub(".*,", "", Geo_location)) |>
+  group_by(Location) |> 
+  summarise(count = n()) |> 
+  arrange(desc(count))
+
+# use tidygeocoder packages to create the longitudes and latitudes 
+# for the selected cities by OpenStreetMap
+locations <- locations |> 
+  geocode(address = Location, method = "osm")
+
+top_3_locations <- head(locations, 3) #select the top 3 states
+
+# create an India map with maps and mapdata package
+india_map <- map_data("worldHires", "India")
+ggplot() + 
+  geom_polygon(data = india_map, aes(x = long, y = lat, group = group), 
+               fill = "white", color = "#2F4F4F", lwd = 0.1) +
+  # create a shape of India
+  geom_point(data = locations, 
+             aes(x = long, y = lat, size = count), 
+             color = "#009E73", alpha = 0.5) +
+  # add the attack numbers to the plot by location
+  geom_text(data = top_3_locations, 
+            aes(x = long, y = lat, 
+                label = paste(Location, ": \n", count)),
+            col = "#191970", size = 5, fontface = "bold") +
+  # label the state names and the number of attacks
+  coord_map() + 
+  labs(title = "Map of States in India with Number of Attacks",
+       x = "Longitude",
+       y = "Latitude",
+       size = "Number of Attacks")
+```
+
+# Part 3: Data Analysis
+
+## Q1: Does the severity levels and attack types are associated?
+
+*Performing chi- squared test for independence of attack type and severity level*
+
+$\underline {Step \ 1 : Hypothesis}$
+
+$H_0$: Attack type and severity level are independent
+
+$H_A$: Attack type and severity level are associated
+
+$\underline {Step \ 2: Check \ Conditions}$
+
+1.  Independence: Sample is generated randomly through synthetic data
+
+2.  Expected counts
+
+```{r}
+#table (cyber_device$Attack_Type, cyber_device$Severity_level)
+
+cat ("Observed Counts : \n")
+
+cyber_tab <- matrix(c(4523,4450,4455,          #observed counts
+                      4427,4374,4464,
+                      4432,4359,4516),
+                    nrow = 3,
+                    byrow = T)
+colnames(cyber_tab) <- c("High", "Low", "Medium")
+rownames (cyber_tab) <- c("DDoS", "Intrusion", "Malware")
+
+cyber_tab
+cat ("\n\n")
+
+chi1_test<- chisq.test(cyber_tab)
+cat("Expected Counts : ", chi1_test$expected)
+
+```
+
+All counts are greater than 5
+
+$\underline {Step\  3: Test \ Statistics}$
+
+```{r}
+chi1_test
+
+cat("The test statistic is " , round (chi1_test$statistic,3))
+
+```
+
+$\underline {Step \  4: \ P-value}$
+
+```{r}
+cat ("The p-value is ", round(chi1_test$p.value,3))
+```
+
+$\underline {Step \ 5: Decision}$
+
+Decision : fail to reject $H_0$
+
+Conclusion: We have enough evidence that there is no association between attack type and severity level
+
+## Q2: Does Non-Apple devices have the greater proportion of high severity level attacks than Apple devices?
+
+*Performing Two Proportion Hypothesis Test for devices with high severity level attacks*
+
+$\underline{Step \ 1: \ Hypothesis}$
+
+Group 1: Proportion of Non-Apple Devices with attacks of high severity level
+
+Group 2: Proportion of Apple Devices with attacks of high severity level
+
+$H_0: p_1 - p_2 = 0$
+
+$H_A: p_1 - p_2 > 0$
+
+```{r}
+#apple devices
+Apple <- cyber_device |> filter(Device == "Apple Device")     
+
+#non-apple devices
+Non_Apple <- cyber_device |> filter(Device == "Non-Apple Device")  
+
+#apple devices with high severity level attacks
+Apple_high <- Apple |> filter(Severity_level == "High")   
+
+#non apple devices with high severity level attacks
+Non_Apple_high <- Non_Apple |> filter(Severity_level == "High")  
+
+
+
+```
+
+$\underline{Step \  2:  \ Check \ Conditions}$
+
+1.  Independence: The data is a random sample generated by algorithm.
+
+2.  Large Sample Size:
+
+```{r}
+x2 <- nrow(Apple_high)           
+x1 <- nrow(Non_Apple_high)
+
+n2 <- nrow(Apple)
+n1 <- nrow(Non_Apple)
+
+p1 <- x1/n1
+p2 <- x2/n2
+
+n1*p1
+n2*p2
+
+n1*(1-p1)
+n2*(1-p2)
+```
+
+All greater than 5.
+
+both conditions are satisfied
+
+```{r}
+pro_test <- prop.test(c(x1, x2), c(n1, n2), 
+                      alternative = "greater", correct = FALSE)
+pro_test1 <- prop.test(c(x1, x2), c(n1, n2), correct = FALSE)
+pro_test
+```
+
+$\underline {Step \ 3: Test \ Statistics}$
+
+```{r}
+cat("The test statistic is " , round (pro_test$statistic,3))
+```
+
+$\underline{Step \  4: \ P-value}$
+
+```{r}
+cat ("The p-value is ", round(pro_test$p.value,3))
+
+```
+
+$\underline{Step \ 5: Decision}$
+
+Decision: Fail to reject the $H_0$.
+
+Conclusion: We have no enough evidence that Non Apple devices have the more high severity level attacks than Apple devices.
+
+$\underline {Confidence \ Interval:}$
+
+```{r}
+cat("The 95% confidence interval of p1 - p2 is",pro_test1$conf.int)
+```
+
+## Q3: Does the action taken by Apple devices and non-Apple devices to the high severity level attacks associated?
+
+$\underline {Step \ 1: Hypothesis }$
+
+$H_0:$ The device types and action taken to the high severity level attacks are independence.
+
+$H_A:$ The device types and action taken to the high severity level attacks are associated.
+
+```{r}
+high_severity <- cyber_device |> filter(Severity_level == "High")
+
+Device_vs_Action <- table(high_severity$Device, high_severity$Action_taken)
+
+chi_test <- chisq.test(Device_vs_Action)
+```
+
+$\underline{Step \ 2: Check \ Conditions}$
+
+1.  Independence: The data is a random sample generated by algorithm.
+
+2.  Expected Counts:
+
+```{r}
+chi_test$expected
+```
+
+All expected values are greater than 5 and the data is a random sample. The conditions satisfied.
+
+$\underline {Step \ 3: Test  \ Statistic}$
+
+The test statistic is `r round(chi_test$statistic, 3)`.
+
+$\underline{Step \ 4: p-value}$
+
+The p-value is `r round(chi_test$p.value, 3)`.
+
+$\underline{Step \ 5: Decision}$
+
+
+Decision : Fail to reject the $H_0$
+
+Conclusion: We have no enough evidence that the device types and action taken to the high severity level attacks are associated.
